@@ -8562,3 +8562,44 @@ func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
 	fmb.bytes /= 2
 	require_True(t, fmb.shouldCompactInline())
 }
+
+func TestFileStoreLimitsTTLTombstone(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true, LimitsTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store three messages that will expire because of MaxAge.
+	var seq uint64
+	for i := 0; i < 3; i++ {
+		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// The last message should be gone after MaxAge has passed.
+	time.Sleep(time.Second * 2)
+	sm, err := fs.LoadMsg(seq, nil)
+	require_Error(t, err)
+
+	// We should have replaced it with a tombstone.
+	sm, err = fs.LoadMsg(seq+1, nil)
+	require_NoError(t, err)
+	require_Equal(t, bytesToString(getHeader("Nats-Applied-Limit", sm.hdr)), "MaxAge")
+	require_Equal(t, bytesToString(getHeader("Nats-TTL", sm.hdr)), "1s")
+
+	time.Sleep(time.Second * 2)
+
+	// The tombstone itself only has a TTL of 1 second so that should
+	// also be gone by now too. No more tombstones should have been
+	// published.
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, sm.seq+1)
+	require_Equal(t, ss.LastSeq, sm.seq)
+	require_Equal(t, ss.Msgs, 0)
+}

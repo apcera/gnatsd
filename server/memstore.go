@@ -36,6 +36,7 @@ type memStore struct {
 	dmap        avl.SequenceSet
 	maxp        int64
 	scb         StorageUpdateHandler
+	tcb         TombstoneUpdateHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
@@ -309,6 +310,13 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 func (ms *memStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	ms.mu.Lock()
 	ms.scb = cb
+	ms.mu.Unlock()
+}
+
+// RegisterStorageUpdates registers a callback for updates to new tombstones.
+func (ms *memStore) RegisterTombstoneUpdates(cb TombstoneUpdateHandler) {
+	ms.mu.Lock()
+	ms.tcb = cb
 	ms.mu.Unlock()
 }
 

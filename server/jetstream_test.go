@@ -25209,7 +25209,7 @@ func TestJetStreamMessageTTLWhenSourcing(t *testing.T) {
 	}
 }
 
-func TestJetStreamMessageTTLSWhenMirroring(t *testing.T) {
+func TestJetStreamMessageTTLWhenMirroring(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -25271,4 +25271,67 @@ func TestJetStreamMessageTTLSWhenMirroring(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJetStreamLimitsTTLWithMirror(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "Origin",
+		Storage:  FileStorage,
+		Subjects: []string{"test"},
+		MaxAge:   time.Second,
+	})
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "Mirror",
+		Storage:     FileStorage,
+		AllowMsgTTL: true,
+		LimitsTTL:   time.Second,
+		Mirror: &StreamSource{
+			Name: "Origin",
+		},
+	})
+	require_Error(t, err)
+}
+
+func TestJetStreamLimitsTTLTombstone(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "TEST",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		MaxAge:      time.Second,
+		AllowMsgTTL: true,
+		LimitsTTL:   time.Second,
+	})
+
+	sub, err := js.SubscribeSync("test")
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_NoError(t, msg.AckSync())
+	}
+
+	msg, err := sub.NextMsg(time.Second * 10)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get(JSAppliedLimit), "MaxAge")
+	require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
 }

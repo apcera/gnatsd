@@ -104,6 +104,10 @@ type StreamConfig struct {
 	// then the `NATS-TTL` header will be ignored.
 	AllowMsgTTL bool `json:"allow_msg_ttl"`
 
+	// LimitsTTL enables leaving a tombstone with a given TTL when limits
+	// are applied that leave behind no messages on a subject.
+	LimitsTTL time.Duration `json:"limits_ttl,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -418,7 +422,7 @@ const (
 	JSMsgSize                 = "Nats-Msg-Size"
 	JSResponseType            = "Nats-Response-Type"
 	JSMessageTTL              = "Nats-TTL"
-	JSMessageNoExpire         = "Nats-No-Expire"
+	JSAppliedLimit            = "Nats-Applied-Limit"
 )
 
 // Headers for republished messages and direct gets.
@@ -1353,6 +1357,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
+	if cfg.LimitsTTL > 0 {
+		if !cfg.AllowMsgTTL {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits TTL cannot be set if message TTLs are disabled"))
+		}
+		if cfg.LimitsTTL < time.Second {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits TTL must be at least 1 second"))
+		}
+	}
+
 	getStream := func(streamName string) (bool, StreamConfig) {
 		var exists bool
 		var cfg StreamConfig
@@ -1394,6 +1407,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 		if cfg.Mirror.FilterSubject != _EMPTY_ && len(cfg.Mirror.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
+		}
+		if cfg.LimitsTTL > 0 {
+			// LimitsTTL cannot be configured on a mirror as it would result in new
+			// tombstones which would use up sequence numbers, diverging from the origin
+			// stream.
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits TTL forbidden on mirrors"))
 		}
 		// Check subject filters overlap.
 		for outer, tr := range cfg.Mirror.SubjectTransforms {
@@ -4055,6 +4074,9 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	mset.store.RegisterTombstoneUpdates(func(seq uint64, subj string) {
+		mset.signalConsumers(subj, seq)
+	})
 	mset.mu.Unlock()
 
 	return nil
