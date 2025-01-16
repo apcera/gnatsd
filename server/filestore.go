@@ -174,6 +174,7 @@ type fileStore struct {
 	tombs       []uint64
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
+	tcb         TombstoneUpdateHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
@@ -2131,7 +2132,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			break
 		}
 		// Can we remove whole block here?
-		if mb.last.ts <= minAge {
+		// TODO(nat): We can't do this with LimitsTTL as we have no way to know
+		// if we're throwing away real messages or other tombstones without
+		// loading them, so in this case we'll fall through to the "slow path".
+		// There might be a better way of handling this though.
+		if mb.fs.cfg.LimitsTTL <= 0 && mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
 			deleteEmptyBlock(mb)
@@ -2198,7 +2203,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			// Update fss
 			// Make sure we have fss loaded.
 			mb.removeSeqPerSubject(sm.subj, seq)
-			fs.removePerSubject(sm.subj)
+			if fs.removePerSubject(sm.subj) {
+				mb.mu.Unlock()
+				fs.systemTombstoneIfNeeded(sm, "MaxAge")
+				mb.mu.Lock()
+			}
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -3612,6 +3621,13 @@ func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	}
 }
 
+// RegisterTombstoneUpdates registers a callback for updates to new tombstones.
+func (fs *fileStore) RegisterTombstoneUpdates(cb TombstoneUpdateHandler) {
+	fs.mu.Lock()
+	fs.tcb = cb
+	fs.mu.Unlock()
+}
+
 // Helper to get hash key for specific message block.
 // Lock should be held
 func (fs *fileStore) hashKeyForBlock(index uint32) []byte {
@@ -4325,10 +4341,10 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 }
 
 // Convenience function to remove per subject tracking at the filestore level.
-// Lock should be held.
-func (fs *fileStore) removePerSubject(subj string) {
+// Lock should be held. Returns if we deleted the last message on the subject.
+func (fs *fileStore) removePerSubject(subj string) bool {
 	if len(subj) == 0 || fs.psim == nil {
-		return
+		return false
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
@@ -4339,9 +4355,11 @@ func (fs *fileStore) removePerSubject(subj string) {
 		} else if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
+				return true
 			}
 		}
 	}
+	return false
 }
 
 // Remove a message, optionally rewriting the mb file.
@@ -5295,6 +5313,45 @@ func (fs *fileStore) cancelAgeChk() {
 	}
 }
 
+// Lock must be held so that nothing else can interleave and write a
+// new message on this subject before we get the chance to write the
+// system tombstone. If the tombstone is written successfully then
+// this function returns a callback func to call scb and tcb after the
+// lock has been released.
+func (fs *fileStore) systemTombstoneIfNeeded(sm *StoreMsg, reason string) func() {
+	// If the deleted message was itself a tombstone then don't
+	// write out more tombstones or we'll churn endlessly.
+	if len(getHeader(JSAppliedLimit, sm.hdr)) != 0 {
+		return nil
+	}
+	if !fs.cfg.AllowMsgTTL || fs.cfg.LimitsTTL <= 0 {
+		return nil
+	}
+	if _, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
+		// There are still messages left with this subject,
+		// therefore it wasn't the last message deleted.
+		return nil
+	}
+	// Build the system tombstone.
+	var _hdr [128]byte
+	hdr := fmt.Appendf(_hdr[:0], "NATS/1.0\r\n%s: %s\r\n%s: %s\r\n\r\n", JSAppliedLimit, reason, JSMessageTTL, fs.cfg.LimitsTTL)
+	seq, ts, ttl := fs.state.LastSeq+1, time.Now().UnixNano(), int64(fs.cfg.LimitsTTL.Seconds())
+	// Store it in the stream and then prepare the callbacks
+	// to return to the caller.
+	if err := fs.storeRawMsg(sm.subj, hdr, nil, seq, ts, ttl); err != nil {
+		return nil
+	}
+	cb, tcb := fs.scb, fs.tcb
+	return func() {
+		if cb != nil {
+			cb(1, int64(fileStoreMsgSize(sm.subj, hdr, nil)), seq, sm.subj)
+		}
+		if tcb != nil {
+			tcb(seq, sm.subj)
+		}
+	}
+}
+
 // Will expire msgs that are too old.
 func (fs *fileStore) expireMsgs() {
 	// We need to delete one by one here and can not optimize for the time being.
@@ -5316,9 +5373,15 @@ func (fs *fileStore) expireMsgs() {
 					continue
 				}
 			}
+			// Remove the message and then, if LimitsTTL is enabled, try and work out
+			// if it was the last message of that particular subject that we just deleted.
 			fs.mu.Lock()
 			fs.removeMsgViaLimits(sm.seq)
+			cbs := fs.systemTombstoneIfNeeded(sm, "MaxAge")
 			fs.mu.Unlock()
+			if cbs != nil {
+				cbs()
+			}
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
 		}
