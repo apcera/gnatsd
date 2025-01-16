@@ -2132,7 +2132,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			break
 		}
 		// Can we remove whole block here?
-		if mb.last.ts <= minAge {
+		// TODO(nat): We can't do this with LimitsTTL as we have no way to know
+		// if we're throwing away real messages or other tombstones without
+		// loading them, so in this case we'll fall through to the "slow path".
+		// There might be a better way of handling this though.
+		if mb.fs.cfg.LimitsTTL <= 0 && mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
 			deleteEmptyBlock(mb)
@@ -2199,7 +2203,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			// Update fss
 			// Make sure we have fss loaded.
 			mb.removeSeqPerSubject(sm.subj, seq)
-			fs.removePerSubject(sm.subj)
+			if fs.removePerSubject(sm.subj) {
+				mb.mu.Unlock()
+				fs.systemTombstoneIfNeeded(sm, "MaxAge")
+				mb.mu.Lock()
+			}
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -4333,10 +4341,10 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 }
 
 // Convenience function to remove per subject tracking at the filestore level.
-// Lock should be held.
-func (fs *fileStore) removePerSubject(subj string) {
+// Lock should be held. Returns if we deleted the last message on the subject.
+func (fs *fileStore) removePerSubject(subj string) bool {
 	if len(subj) == 0 || fs.psim == nil {
-		return
+		return false
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
@@ -4347,9 +4355,11 @@ func (fs *fileStore) removePerSubject(subj string) {
 		} else if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
+				return true
 			}
 		}
 	}
+	return false
 }
 
 // Remove a message, optionally rewriting the mb file.
