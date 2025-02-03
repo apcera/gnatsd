@@ -661,6 +661,12 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 			},
 		)
 	}
+
+	fmt.Printf("Message get counter = %d\n", GetCount.Load())
+	fmt.Printf("Message create counter = %d\n", CreateCount.Load())
+	fmt.Printf("Message put counter = %d\n", PutCount.Load())
+	fmt.Printf("The get/put difference: %d\n", PutCount.Load()-GetCount.Load())
+	fmt.Printf("The create/put difference: %d\n", PutCount.Load()-CreateCount.Load())
 }
 
 func BenchmarkJetStreamPublish(b *testing.B) {

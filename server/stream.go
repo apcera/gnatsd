@@ -5349,12 +5349,14 @@ func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq ui
 	var buf []byte
 	pm := jsPubMsgPool.Get()
 	if pm != nil {
+		GetCount.Add(1)
 		m = pm.(*jsPubMsg)
 		buf = m.buf[:0]
 		if hdr != nil {
 			hdr = append(m.hdr[:0], hdr...)
 		}
 	} else {
+		CreateCount.Add(1)
 		m = new(jsPubMsg)
 	}
 	// When getting something from a pool it is critical that all fields are
@@ -5365,12 +5367,18 @@ func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq ui
 	return m
 }
 
+var GetCount atomic.Int32
+var CreateCount atomic.Int32
+var PutCount atomic.Int32
+
 // Gets a jsPubMsg from the pool.
 func getJSPubMsgFromPool() *jsPubMsg {
 	pm := jsPubMsgPool.Get()
 	if pm != nil {
+		GetCount.Add(1)
 		return pm.(*jsPubMsg)
 	}
+	CreateCount.Add(1)
 	return new(jsPubMsg)
 }
 
@@ -5385,6 +5393,7 @@ func (pm *jsPubMsg) returnToPool() {
 	if len(pm.hdr) > 0 {
 		pm.hdr = pm.hdr[:0]
 	}
+	PutCount.Add(1)
 	jsPubMsgPool.Put(pm)
 }
 
