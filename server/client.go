@@ -3582,9 +3582,9 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// If we are a client and we detect that the consumer we are
 	// sending to is in a stalled state, go ahead and wait here
 	// with a limit.
-	if c.kind == CLIENT && client.out.stc != nil {
-		client.stalledWait(c)
-	}
+	//if c.kind == CLIENT && client.out.stc != nil {
+	//	client.stalledWait(c)
+	//}
 
 	// Check for closed connection
 	if client.isClosed() {
