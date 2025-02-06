@@ -2343,7 +2343,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	const (
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 65536
+		compactNumMin   = 512
 	)
 
 	// Spread these out for large numbers on server restart.
@@ -2368,7 +2368,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// This only entails how many messages, and the first and last sequence of the stream.
 	// This is all that is needed to detect a change, and we can get this from FilteredState()
 	// with an empty filter.
-	var lastState SimpleState
+	//var lastState SimpleState
 
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
@@ -2379,21 +2379,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		}
 
-		// Before we actually calculate the detailed state and encode it, let's check the
-		// simple state to detect any changes.
-		curState := mset.store.FilteredState(0, _EMPTY_)
+		//// Before we actually calculate the detailed state and encode it, let's check the
+		//// simple state to detect any changes.
+		//curState := mset.store.FilteredState(0, _EMPTY_)
 
 		// If the state hasn't changed but the log has gone way over
 		// the compaction size then we will want to compact anyway.
 		// This shouldn't happen for streams like it can for pull
 		// consumers on idle streams but better to be safe than sorry!
 		ne, nb := n.Size()
-		if curState == lastState && ne < compactNumMin && nb < compactSizeMin {
+		if ne < compactNumMin && nb < compactSizeMin {
 			return
 		}
 
 		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
-			lastState = curState
+			//lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 		}
