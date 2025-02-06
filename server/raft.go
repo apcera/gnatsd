@@ -1166,6 +1166,8 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
+	start := time.Now()
+	defer n.debug("Installing snapshot of %d bytes (took %v)", len(data), time.Since(start))
 
 	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
