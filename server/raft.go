@@ -3767,8 +3767,6 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		if err := n.storeToWAL(ae); err != nil {
 			return
 		}
-		// We count ourselves.
-		n.acks[n.pindex] = map[string]struct{}{n.id: {}}
 		n.active = time.Now()
 
 		// Save in memory for faster processing during applyCommit.

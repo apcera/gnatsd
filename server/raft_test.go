@@ -2024,6 +2024,41 @@ func TestNRGHeartbeatCanEstablishQuorumAfterLeaderChange(t *testing.T) {
 	require_Equal(t, n.aflr, 0)
 }
 
+func TestNRGQuorumAccounting(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	// Timeline
+	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
+	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
+
+	// Adjust cluster size, so we need at least 2 responses from other servers to establish quorum.
+	require_NoError(t, n.AdjustBootClusterSize(5))
+	require_Equal(t, n.csz, 5)
+	require_Equal(t, n.qn, 3)
+
+	// Switch this node to leader, and send an entry.
+	n.switchToLeader()
+	require_Equal(t, n.pindex, 0)
+	n.sendAppendEntry(entries)
+	require_Equal(t, n.pindex, 1)
+
+	// The first response MUST NOT indicate quorum has been reached.
+	n.processAppendEntryResponse(aeHeartbeat1Response)
+	require_Equal(t, n.commit, 0)
+
+	// The second response means we have reached quorum and can move commit up.
+	n.processAppendEntryResponse(aeHeartbeat2Response)
+	require_Equal(t, n.commit, 1)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
