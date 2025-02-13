@@ -1946,6 +1946,39 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	require_True(t, n.Healthy())
 }
 
+func TestNRGAppendEntryResponseEdgeCases(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Only a leader receives these.
+	n.switchToLeader()
+	require_Equal(t, n.term, 0)
+
+	// Leader with higher term, stepdown.
+	n.processAppendEntryResponse(&appendEntryResponse{term: 1, index: 1, peer: nats0, success: true})
+	require_Equal(t, n.State(), Follower)
+	require_Equal(t, n.term, 1)
+
+	// Switch back to leader.
+	n.term = 2
+	n.switchToLeader()
+
+	// Simulate receiving a successful response but from an old term, must NOT apply.
+	n.commit = 99
+	n.acks[100] = map[string]struct{}{"0": {}, "1": {}}
+	n.processAppendEntryResponse(&appendEntryResponse{term: 1, index: 100, peer: nats0, success: true})
+	require_Len(t, len(n.acks), 1)
+	// Just reset these, were only for testing side effects above.
+	n.commit = 0
+	n.acks = make(map[uint64]map[string]struct{})
+
+	// Trigger catchup for old follower.
+	n.processAppendEntryResponse(&appendEntryResponse{term: 0, index: 0, peer: nats0, success: false, reply: "catchup"})
+	require_True(t, n.progress != nil)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
