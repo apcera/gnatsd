@@ -2482,7 +2482,7 @@ func (n *raft) runAsLeader() {
 	}
 
 	n.Lock()
-	psubj, rpsubj := n.psubj, n.rpsubj
+	psubj, rpsubj, pindex := n.psubj, n.rpsubj, n.pindex
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
@@ -2509,6 +2509,11 @@ func (n *raft) runAsLeader() {
 		n.unsubscribe(rpsub)
 		n.Unlock()
 	}()
+
+	// To send out our initial peer state. But only if it's the very first message.
+	if pindex == 0 {
+		n.sendPeerState()
+	}
 
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
