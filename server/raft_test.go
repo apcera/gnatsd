@@ -1946,6 +1946,49 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	require_True(t, n.Healthy())
 }
 
+func TestNRGPeerStateRace(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// The meta layer is separate from other layers, and the meta layer can update known peers.
+	// We simulate a race condition where the leader changes, and it must NOT send its current
+	// peer state as it may be outdated.
+	l := rg.leader()
+	knownPeers := append(l.node().(*raft).peerNames(), "test")
+	var updatedFirst bool
+	for _, sm := range rg {
+		if sm == l {
+			continue
+		}
+		// Simulate node receiving the new peer set.
+		n := sm.node()
+		n.UpdateKnownPeers(knownPeers)
+
+		if updatedFirst {
+			continue
+		}
+		updatedFirst = true
+
+		// Put the node into observer mode, so it's not able to become leader.
+		// This is important as that ensures only a server with an outdated peer set can become leader.
+		n.SetObserver(true)
+		require_NoError(t, rg.leader().node().StepDown())
+		rg.waitOnLeader()
+		n.SetObserver(false)
+	}
+
+	// Finally also update the peer set of the first leader.
+	l.node().UpdateKnownPeers(knownPeers)
+
+	// Confirm the correct peer set exists on all nodes.
+	for _, sm := range rg {
+		require_Len(t, len(sm.node().(*raft).peerNames()), len(knownPeers))
+	}
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:

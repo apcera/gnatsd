@@ -2510,9 +2510,6 @@ func (n *raft) runAsLeader() {
 		n.Unlock()
 	}()
 
-	// To send out our initial peer state.
-	n.sendPeerState()
-
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
 
