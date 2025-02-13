@@ -3017,18 +3017,23 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 	// See if we have items to apply.
 	var sendHB bool
 
-	if results := n.acks[ar.index]; results != nil {
-		results[ar.peer] = struct{}{}
-		if nr := len(results); nr >= n.qn {
-			// We have a quorum.
-			for index := n.commit + 1; index <= ar.index; index++ {
-				if err := n.applyCommit(index); err != nil && err != errNodeClosed {
-					n.error("Got an error applying commit for %d: %v", index, err)
-					break
-				}
+	results := n.acks[ar.index]
+	if results == nil {
+		results = make(map[string]struct{})
+		n.acks[ar.index] = results
+	}
+	results[ar.peer] = struct{}{}
+
+	// We don't count ourselves to account for leader changes, so add 1.
+	if nr := len(results); nr+1 >= n.qn {
+		// We have a quorum.
+		for index := n.commit + 1; index <= ar.index; index++ {
+			if err := n.applyCommit(index); err != nil && err != errNodeClosed {
+				n.error("Got an error applying commit for %d: %v", index, err)
+				break
 			}
-			sendHB = n.prop.len() == 0
 		}
+		sendHB = n.prop.len() == 0
 	}
 	n.Unlock()
 

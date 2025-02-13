@@ -1989,6 +1989,41 @@ func TestNRGPeerStateRace(t *testing.T) {
 	}
 }
 
+func TestNRGHeartbeatCanEstablishQuorumAfterLeaderChange(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeatResponse := &appendEntryResponse{term: 1, index: 1, peer: nats0, success: true}
+
+	// Process first message.
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.aflr, 0)
+
+	// Simulate becoming leader, and not knowing if the stored entry has quorum and can be committed.
+	// Switching to leader should send a heartbeat.
+	n.switchToLeader()
+	require_Equal(t, n.aflr, 1)
+	require_Equal(t, n.commit, 0)
+
+	// We simulate receiving the successful heartbeat response here. It should move the commit up.
+	n.processAppendEntryResponse(aeHeartbeatResponse)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.aflr, 1)
+
+	// Once the entry is applied, it should reset the applied floor.
+	n.Applied(1)
+	require_Equal(t, n.aflr, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
